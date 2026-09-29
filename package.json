@@ -13,9 +13,11 @@
     "typecheck": "pnpm -r typecheck",
     "test": "pnpm -r test",
     "db:generate": "pnpm --filter @prh/database generate",
-    "db:migrate": "pnpm --filter @prh/database migrate",
+    "db:migrate": "pnpm --filter @prh/api db:migrate",
     "db:seed": "pnpm --filter @prh/database seed",
-    "discord:register": "pnpm --filter @prh/discord register"
+    "discord:register": "pnpm --filter @prh/discord register",
+    "db:migrate:local": "pnpm --filter @prh/api db:migrate:local",
+    "db:seed:local": "pnpm --filter @prh/database seed:local"
   },
   "devDependencies": {
     "typescript": "^5.9.3"

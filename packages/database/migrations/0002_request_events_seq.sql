@@ -1,1 +1,0 @@
-ALTER TABLE "request_events" ADD COLUMN "seq" bigserial NOT NULL;

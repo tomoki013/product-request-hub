@@ -12,18 +12,18 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json",
     "generate": "drizzle-kit generate",
-    "migrate": "tsx scripts/migrate.ts",
-    "seed": "tsx scripts/seed.ts"
+    "seed": "tsx scripts/seed.ts",
+    "seed:local": "tsx scripts/seed.ts --local"
   },
   "dependencies": {
     "@prh/shared": "workspace:*",
-    "drizzle-orm": "^0.45.3",
-    "postgres": "^3.4.7"
+    "drizzle-orm": "^0.45.3"
   },
   "devDependencies": {
     "@types/node": "^22.18.0",
     "drizzle-kit": "^0.31.5",
     "tsx": "^4.20.6",
-    "typescript": "^5.9.3"
+    "typescript": "^5.9.3",
+    "@cloudflare/workers-types": "^5.20260929.1"
   }
 }

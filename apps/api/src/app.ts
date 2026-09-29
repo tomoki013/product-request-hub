@@ -32,10 +32,9 @@ export function createApp(deps: AppDeps = {}) {
     return c.json<ApiErrorBody>({ error: { code: "internal", message: "Internal Server Error" } }, 500);
   });
 
-  // Per-request wiring. On Workers a DB connection must not outlive the request.
+  // Per-request wiring.
   app.use("*", async (c, next) => {
-    const connectionString = c.env.HYPERDRIVE?.connectionString ?? c.env.DATABASE_URL;
-    const db = deps.db ? deps.db(c.env) : createDb(requireEnv(connectionString, "DATABASE_URL"));
+    const db = deps.db ? deps.db(c.env) : createDb(c.env.DB);
     const defer = (task: Promise<unknown>) => {
       try {
         c.executionCtx.waitUntil(task);
@@ -84,7 +83,7 @@ export function createApp(deps: AppDeps = {}) {
   const api = new Hono<AppEnv>();
   api.use("*", async (c, next) => {
     const origin = c.env.WEB_BASE_URL;
-    return cors({ origin, credentials: true, allowHeaders: ["authorization", "content-type"] })(c, next);
+    return cors({ origin, credentials: true, allowHeaders: ["cf-access-jwt-assertion", "content-type"] })(c, next);
   });
   api.use("*", requireUser);
   api.route("/requests", requestRoutes);
@@ -92,11 +91,6 @@ export function createApp(deps: AppDeps = {}) {
   app.route("/api", api);
 
   return app;
-}
-
-function requireEnv(value: string | undefined, name: string): string {
-  if (!value) throw new Error(`${name} is not configured`);
-  return value;
 }
 
 export type App = ReturnType<typeof createApp>;

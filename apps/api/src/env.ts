@@ -5,14 +5,15 @@ import type { DiscordRest } from "@prh/discord";
 import type { DiscordSync } from "./discord/sync";
 
 export interface Bindings {
-  DATABASE_URL?: string;
-  HYPERDRIVE?: { connectionString: string };
+  DB: D1Database;
   DISCORD_PUBLIC_KEY: string;
   DISCORD_APPLICATION_ID: string;
   DISCORD_BOT_TOKEN: string;
   WEB_BASE_URL: string;
-  SUPABASE_URL?: string;
-  SUPABASE_JWT_SECRET?: string;
+  /** Cloudflare Access team domain, e.g. "your-team.cloudflareaccess.com". */
+  CF_ACCESS_TEAM_DOMAIN?: string;
+  /** Application Audience (AUD) tag of the Access application. */
+  CF_ACCESS_AUD?: string;
   AUTH_DEV_BYPASS?: string;
 }
 

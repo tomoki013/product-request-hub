@@ -29,15 +29,21 @@ import {
   type RequestListItem,
   type UpdateRequestInput,
 } from "@prh/shared";
-import { and, asc, desc, eq, ilike, isNull, or, sql, type SQL } from "drizzle-orm";
-import { alias } from "drizzle-orm/pg-core";
+import { and, asc, desc, eq, isNull, or, sql, type SQL } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
+import { alias } from "drizzle-orm/sqlite-core";
 import { z } from "zod";
 import { AppError, notFound } from "../errors";
 import { assertPermission, type Actor } from "./actor";
 import type { RequestNotifier } from "./notifier";
 
-type Tx = Parameters<Parameters<Database["transaction"]>[0]>[0];
-type Executor = Database | Tx;
+/**
+ * D1 has no interactive transactions. Multi-statement writes are expressed as a
+ * `db.batch()`, which D1 runs atomically (all statements commit or none do),
+ * so every id a later statement needs is generated up front.
+ */
+type Statement = BatchItem<"sqlite">;
+type Statements = [Statement, ...Statement[]];
 
 interface EventInput {
   requestId: string;
@@ -69,7 +75,7 @@ const canonical = alias(requests, "canonical");
  * every request merged into it as a duplicate.
  */
 const requestCountSql = sql<number>`(
-  select count(*)::int from ${requestSources} rs
+  select count(*) from ${requestSources} rs
   join ${requests} d on d.id = rs.request_id
   where d.id = ${requests.id} or d.duplicate_of_id = ${requests.id}
 )`;
@@ -91,62 +97,55 @@ export class RequestService {
     const input = validate(createRequestSchema, raw);
     const target = await this.resolveTarget(actor, input.origin);
 
-    const { requestId, originId } = await this.db.transaction(async (tx) => {
-      const [seq] = await tx
+    const requestId = crypto.randomUUID();
+    const originId = crypto.randomUUID();
+    // Allocated by the first statement of the batch and read back by the ones after it.
+    // D1 serializes writes, so concurrent creates cannot share a number.
+    const nextNumber = sql`(select last_number from request_number_sequences where workspace_id = ${actor.workspaceId})`;
+
+    await this.db.batch([
+      this.db
         .insert(requestNumberSequences)
         .values({ workspaceId: actor.workspaceId, lastNumber: 1 })
         .onConflictDoUpdate({
           target: requestNumberSequences.workspaceId,
           set: { lastNumber: sql`${requestNumberSequences.lastNumber} + 1` },
-        })
-        .returning({ n: requestNumberSequences.lastNumber });
-      if (!seq) throw new Error("failed to allocate request number");
-
-      const [created] = await tx
-        .insert(requests)
-        .values({
-          workspaceId: actor.workspaceId,
-          projectId: target.projectId,
-          requestNumber: seq.n,
-          title: input.title,
-          description: input.description,
-          requesterId: actor.userId,
-          sourceProvider: input.origin.provider,
-        })
-        .returning({ id: requests.id });
-      if (!created) throw new Error("failed to insert request");
-
-      const [origin] = await tx
-        .insert(requestOrigins)
-        .values({
-          requestId: created.id,
-          provider: input.origin.provider,
-          externalWorkspaceId: target.externalWorkspaceId,
-          externalChannelId: target.externalChannelId,
-          externalUrl: target.externalUrl,
-          metadata: { ...target.metadata, ...ctx.metadata },
-        })
-        .returning({ id: requestOrigins.id });
-      if (!origin) throw new Error("failed to insert origin");
-
+        }),
+      this.db.insert(requests).values({
+        id: requestId,
+        workspaceId: actor.workspaceId,
+        projectId: target.projectId,
+        requestNumber: nextNumber as unknown as number,
+        title: input.title,
+        description: input.description,
+        requesterId: actor.userId,
+        sourceProvider: input.origin.provider,
+      }),
+      this.db.insert(requestOrigins).values({
+        id: originId,
+        requestId,
+        provider: input.origin.provider,
+        externalWorkspaceId: target.externalWorkspaceId,
+        externalChannelId: target.externalChannelId,
+        externalUrl: target.externalUrl,
+        metadata: { ...target.metadata, ...ctx.metadata },
+      }),
       // The filer's own occurrence is the first source (Requests = 1).
-      await tx.insert(requestSources).values({
-        requestId: created.id,
+      this.db.insert(requestSources).values({
+        requestId,
         sourceType: input.sourceType ?? null,
         userId: actor.userId,
         externalUserId: ctx.externalUserId ?? null,
-      });
-
-      await this.logEvent(tx, {
-        requestId: created.id,
+      }),
+      this.logEvent({
+        requestId,
         actorUserId: actor.userId,
         eventType: "request_created",
-        newValue: formatRequestNumber(seq.n),
+        // Same format as formatRequestNumber() (shared/request-number.ts).
+        newValue: sql`'REQ-' || printf('%04d', ${nextNumber})` as unknown as string,
         metadata: { provider: input.origin.provider, sourceType: input.sourceType ?? null },
-      });
-
-      return { requestId: created.id, originId: origin.id };
-    });
+      }),
+    ]);
 
     return { request: await this.getById(actor, requestId), originId };
   }
@@ -218,7 +217,7 @@ export class RequestService {
         externalThreadId: data.threadId,
         // Keep the source message URL for message-command requests.
         externalUrl: sql`coalesce(${requestOrigins.externalUrl}, ${data.url})`,
-        metadata: sql`${requestOrigins.metadata} || ${JSON.stringify({ botMessageUrl: data.url })}::jsonb`,
+        metadata: sql`json_patch(${requestOrigins.metadata}, ${JSON.stringify({ botMessageUrl: data.url })})`,
       })
       .where(eq(requestOrigins.id, originId));
   }
@@ -235,9 +234,11 @@ export class RequestService {
     if (!query.includeDuplicates) conditions.push(isNull(requests.duplicateOfId));
     if (query.q) {
       const n = parseRequestNumber(query.q);
+      // SQLite's LIKE is case-insensitive for ASCII.
+      const pattern = `%${escapeLike(query.q)}%`;
       const text = or(
-        ilike(requests.title, `%${escapeLike(query.q)}%`),
-        ilike(requests.description, `%${escapeLike(query.q)}%`),
+        sql`${requests.title} like ${pattern} escape '\\'`,
+        sql`${requests.description} like ${pattern} escape '\\'`,
       )!;
       conditions.push(n ? or(eq(requests.requestNumber, n), text)! : text);
     }
@@ -249,9 +250,9 @@ export class RequestService {
         .orderBy(desc(requests.createdAt))
         .limit(query.limit)
         .offset(query.offset),
-      this.db.select({ total: sql<number>`count(*)::int` }).from(requests).where(where),
+      this.db.select({ total: sql<number>`count(*)` }).from(requests).where(where),
     ]);
-    return { items: rows.map(toListItem), total: count?.total ?? 0 };
+    return { items: rows.map(toListItem), total: Number(count?.total ?? 0) };
   }
 
   /** Accepts a UUID or a request key such as "REQ-0023". */
@@ -278,7 +279,7 @@ export class RequestService {
 
     const [sources, origins, links, duplicates] = await Promise.all([
       this.db
-        .select({ sourceType: requestSources.sourceType, count: sql<number>`count(*)::int` })
+        .select({ sourceType: requestSources.sourceType, count: sql<number>`count(*)` })
         .from(requestSources)
         .innerJoin(requests, eq(requests.id, requestSources.requestId))
         .where(or(eq(requests.id, id), eq(requests.duplicateOfId, id)))
@@ -309,7 +310,7 @@ export class RequestService {
         : null,
       sourceProvider: row.sourceProvider,
       sources: sources
-        .map((s) => ({ sourceType: s.sourceType ?? ("unspecified" as const), count: s.count }))
+        .map((s) => ({ sourceType: s.sourceType ?? ("unspecified" as const), count: Number(s.count) }))
         .sort((a, b) => b.count - a.count),
       origins: origins.map((o) => ({
         provider: o.provider,
@@ -386,7 +387,7 @@ export class RequestService {
       .from(requestEvents)
       .leftJoin(users, eq(users.id, requestEvents.actorUserId))
       .where(eq(requestEvents.requestId, request.id))
-      .orderBy(asc(requestEvents.createdAt), asc(requestEvents.seq));
+      .orderBy(asc(requestEvents.createdAt), sql`${requestEvents}.rowid`);
     return rows.map((r) => ({
       id: r.id,
       eventType: r.eventType,
@@ -468,17 +469,17 @@ export class RequestService {
       });
     }
 
-    await this.db.transaction(async (tx) => {
-      await tx
+    await this.db.batch([
+      this.db
         .update(requests)
         .set({
           ...patch,
           ...(statusChange?.to === "released" ? { releasedAt: new Date() } : {}),
           ...(statusChange?.from === "released" ? { releasedAt: null } : {}),
         })
-        .where(eq(requests.id, current.id));
-      for (const e of events) await this.logEvent(tx, e);
-    });
+        .where(eq(requests.id, current.id)),
+      ...events.map((e) => this.logEvent(e)),
+    ]);
 
     const updated = await this.getById(actor, current.id);
     if (statusChange) {
@@ -503,22 +504,22 @@ export class RequestService {
     const target = await this.get(actor, id);
     const rootId = target.duplicateOf?.id ?? target.id;
 
-    await this.db.transaction(async (tx) => {
-      await tx.insert(requestSources).values({
+    await this.db.batch([
+      this.db.insert(requestSources).values({
         requestId: rootId,
         sourceType: input.sourceType,
         userId: actor.userId,
         externalUserId: ctx.externalUserId ?? null,
         note: input.note ?? null,
-      });
-      await this.logEvent(tx, {
+      }),
+      this.logEvent({
         requestId: rootId,
         actorUserId: actor.userId,
         eventType: "request_added",
         newValue: input.sourceType,
         metadata: input.note ? { note: input.note } : {},
-      });
-    });
+      }),
+    ]);
 
     const updated = await this.getById(actor, rootId);
     this.notifier.notify({ kind: "source_added", request: updated });
@@ -540,31 +541,31 @@ export class RequestService {
     if (duplicate.duplicateOf) throw new AppError("conflict", `${duplicate.key} is already merged`);
     const root = rootId === target.id ? target : await this.getById(actor, rootId);
 
-    await this.db.transaction(async (tx) => {
-      await tx.update(requests).set({ duplicateOfId: root.id }).where(eq(requests.id, duplicate.id));
-      // Flatten: anything merged into the duplicate now points at the root.
-      const children = await tx
-        .update(requests)
-        .set({ duplicateOfId: root.id })
-        .where(eq(requests.duplicateOfId, duplicate.id))
-        .returning({ id: requests.id });
+    // Anything merged into the duplicate is re-pointed at the root (no chains).
+    const children = await this.db
+      .select({ id: requests.id })
+      .from(requests)
+      .where(eq(requests.duplicateOfId, duplicate.id));
+    const metadata = { duplicateId: duplicate.id, canonicalId: root.id };
 
-      const metadata = { duplicateId: duplicate.id, canonicalId: root.id };
-      await this.logEvent(tx, {
+    await this.db.batch([
+      this.db.update(requests).set({ duplicateOfId: root.id }).where(eq(requests.id, duplicate.id)),
+      this.db.update(requests).set({ duplicateOfId: root.id }).where(eq(requests.duplicateOfId, duplicate.id)),
+      this.logEvent({
         requestId: duplicate.id,
         actorUserId: actor.userId,
         eventType: "duplicate_merged",
         newValue: root.key,
         metadata,
-      });
-      await this.logEvent(tx, {
+      }),
+      this.logEvent({
         requestId: root.id,
         actorUserId: actor.userId,
         eventType: "duplicate_merged",
         oldValue: duplicate.key,
         metadata: { ...metadata, reparented: children.map((c) => c.id) },
-      });
-    });
+      }),
+    ]);
 
     const updatedRoot = await this.getById(actor, root.id);
     this.notifier.notify({ kind: "source_added", request: updatedRoot });
@@ -576,22 +577,22 @@ export class RequestService {
   async addLink(actor: Actor, id: string, input: AddLinkInput): Promise<RequestDetail> {
     assertPermission(actor, "request:link_development");
     const request = await this.get(actor, id);
-    await this.db.transaction(async (tx) => {
-      await tx.insert(requestLinks).values({
+    await this.db.batch([
+      this.db.insert(requestLinks).values({
         requestId: request.id,
         linkType: input.linkType,
         url: input.url,
         label: input.label ?? null,
         createdById: actor.userId,
-      });
-      await this.logEvent(tx, {
+      }),
+      this.logEvent({
         requestId: request.id,
         actorUserId: actor.userId,
         eventType: LINK_EVENT_TYPES[input.linkType],
         newValue: input.label ?? input.url,
         metadata: { url: input.url },
-      });
-    });
+      }),
+    ]);
     return this.getById(actor, request.id);
   }
 
@@ -614,8 +615,8 @@ export class RequestService {
     });
   }
 
-  private async logEvent(tx: Executor, e: EventInput): Promise<void> {
-    await tx.insert(requestEvents).values({
+  private logEvent(e: EventInput): Statement {
+    return this.db.insert(requestEvents).values({
       requestId: e.requestId,
       actorUserId: e.actorUserId,
       eventType: e.eventType,

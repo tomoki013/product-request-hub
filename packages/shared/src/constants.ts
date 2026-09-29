@@ -75,7 +75,7 @@ export const USER_ROLE_LABELS: Record<UserRole, string> = {
 export const ORIGIN_PROVIDERS = ["discord", "slack", "web", "api"] as const;
 export type OriginProvider = (typeof ORIGIN_PROVIDERS)[number];
 
-export const IDENTITY_PROVIDERS = ["discord", "github", "slack", "supabase"] as const;
+export const IDENTITY_PROVIDERS = ["discord", "github", "slack"] as const;
 export type IdentityProvider = (typeof IDENTITY_PROVIDERS)[number];
 
 export const REQUEST_LINK_TYPES = ["github_issue", "github_pull_request", "release"] as const;

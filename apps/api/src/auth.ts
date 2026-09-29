@@ -5,27 +5,27 @@ import { AppError } from "./errors";
 
 const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
-async function verifySupabaseToken(token: string, env: Bindings): Promise<JWTPayload> {
-  if (env.SUPABASE_JWT_SECRET) {
-    const { payload } = await jwtVerify(token, new TextEncoder().encode(env.SUPABASE_JWT_SECRET), {
-      audience: "authenticated",
-    });
-    return payload;
-  }
-  if (!env.SUPABASE_URL) throw new Error("SUPABASE_URL or SUPABASE_JWT_SECRET must be set");
-  const url = `${env.SUPABASE_URL.replace(/\/$/, "")}/auth/v1/.well-known/jwks.json`;
+async function verifyAccessToken(token: string, env: Bindings): Promise<JWTPayload> {
+  const team = env.CF_ACCESS_TEAM_DOMAIN?.replace(/^https?:\/\//, "").replace(/\/$/, "");
+  if (!team || !env.CF_ACCESS_AUD) throw new Error("CF_ACCESS_TEAM_DOMAIN and CF_ACCESS_AUD must be set");
+  const url = `https://${team}/cdn-cgi/access/certs`;
   let jwks = jwksCache.get(url);
   if (!jwks) {
     jwks = createRemoteJWKSet(new URL(url));
     jwksCache.set(url, jwks);
   }
-  const { payload } = await jwtVerify(token, jwks, { audience: "authenticated" });
+  const { payload } = await jwtVerify(token, jwks, {
+    issuer: `https://${team}`,
+    audience: env.CF_ACCESS_AUD,
+  });
   return payload;
 }
 
 /**
- * Authenticates the management app. Tokens are Supabase Auth access tokens;
- * the auth user is linked to a Product Request Hub user by email.
+ * Authenticates the management app. Cloudflare Access signs in the user and
+ * attaches a JWT (`Cf-Access-Jwt-Assertion`) that the management app forwards;
+ * the email in it is matched to a registered Product Request Hub user.
+ * The API itself is public (Discord calls it), so the signature is always verified.
  */
 export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
   const identity = c.get("services").identity;
@@ -38,20 +38,20 @@ export const requireUser = createMiddleware<AppEnv>(async (c, next) => {
     return next();
   }
 
-  const header = c.req.header("authorization");
-  const token = header?.startsWith("Bearer ") ? header.slice(7) : null;
-  if (!token) throw new AppError("unauthorized", "Missing bearer token");
+  const token = c.req.header("cf-access-jwt-assertion");
+  if (!token) throw new AppError("unauthorized", "Missing Cloudflare Access token");
 
   let payload: JWTPayload;
   try {
-    payload = await verifySupabaseToken(token, c.env);
+    payload = await verifyAccessToken(token, c.env);
   } catch {
     throw new AppError("unauthorized", "Invalid token");
   }
-  if (!payload.sub) throw new AppError("unauthorized", "Invalid token");
-
+  // Service tokens carry no email and are not users.
   const email = typeof payload.email === "string" ? payload.email : undefined;
-  const actor = await identity.resolveWebUser(payload.sub, email);
+  if (!email) throw new AppError("unauthorized", "Invalid token");
+
+  const actor = await identity.findByEmail(email);
   if (!actor) throw new AppError("forbidden", "This account is not registered in any workspace");
   c.set("actor", actor);
   return next();

@@ -237,7 +237,10 @@ export class AdminService {
   }
 }
 
+/** SQLite reports "UNIQUE constraint failed: table.column"; drizzle may wrap it in `cause`. */
 function uniqueViolation(e: unknown, message: string): unknown {
-  const code = (e as { code?: string; cause?: { code?: string } })?.code ?? (e as { cause?: { code?: string } })?.cause?.code;
-  return code === "23505" ? new AppError("conflict", message) : e;
+  const text = [e, (e as { cause?: unknown })?.cause]
+    .map((x) => (x instanceof Error ? x.message : ""))
+    .join(" ");
+  return text.includes("UNIQUE constraint failed") ? new AppError("conflict", message) : e;
 }

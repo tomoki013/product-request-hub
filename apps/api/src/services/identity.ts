@@ -40,38 +40,15 @@ export class IdentityService {
     const existing = await this.findByExternalId("discord", discordUser.id, workspaceId);
     if (existing) return existing;
 
-    return this.db.transaction(async (tx) => {
-      const [user] = await tx
-        .insert(users)
-        .values({ workspaceId, name: discordUser.name, role: "requester" })
-        .returning({ userId: users.id, workspaceId: users.workspaceId, role: users.role });
-      if (!user) throw new Error("failed to provision user");
-      await tx
+    // D1 has no interactive transactions; batch() runs both inserts atomically.
+    const userId = crypto.randomUUID();
+    await this.db.batch([
+      this.db.insert(users).values({ id: userId, workspaceId, name: discordUser.name, role: "requester" }),
+      this.db
         .insert(externalIdentities)
-        .values({ userId: user.userId, provider: "discord", externalUserId: discordUser.id });
-      return user;
-    });
-  }
-
-  /**
-   * Web sign-in (Supabase Auth). The first login links the auth user to a
-   * pre-registered user with the same email; unknown emails are rejected.
-   */
-  async resolveWebUser(authUserId: string, email: string | undefined): Promise<Actor | null> {
-    const linked = await this.findByExternalId("supabase", authUserId);
-    if (linked) return linked;
-    if (!email) return null;
-
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.email, email.toLowerCase()),
-      orderBy: asc(users.createdAt),
-    });
-    if (!user) return null;
-    await this.db
-      .insert(externalIdentities)
-      .values({ userId: user.id, provider: "supabase", externalUserId: authUserId })
-      .onConflictDoNothing();
-    return { userId: user.id, workspaceId: user.workspaceId, role: user.role };
+        .values({ userId, provider: "discord", externalUserId: discordUser.id }),
+    ]);
+    return { userId, workspaceId, role: "requester" };
   }
 
   async findByEmail(email: string): Promise<Actor | null> {

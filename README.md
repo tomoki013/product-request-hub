@@ -12,10 +12,10 @@ Discord        要望の発生・起票・状況確認
 Request API    整理・評価・優先順位・開発管理   (Hono on Cloudflare Workers)
    │
    ▼
-PostgreSQL     Single Source of Truth            (Supabase)
+Cloudflare D1  Single Source of Truth            (SQLite)
    ▲
    │
-Management App Request一覧・詳細・Activity・設定 (Next.js)
+Management App Request一覧・詳細・Activity・設定 (Next.js on Workers, Cloudflare Access)
 ```
 
 ## Repository
@@ -23,9 +23,9 @@ Management App Request一覧・詳細・Activity・設定 (Next.js)
 ```
 apps/
   api/        Hono API + Discord Interactions endpoint (Cloudflare Workers)
-  web/        Next.js management app
+  web/        Next.js management app (OpenNext on Cloudflare Workers)
 packages/
-  database/   Drizzle schema, migrations, seed
+  database/   Drizzle schema (SQLite / D1), migrations, seed
   shared/     Domain constants, zod schemas, status flow, permissions, API types
   discord/    Signature verification, payload builders, REST client, command registration
   ui/         Shared React components
@@ -34,19 +34,18 @@ docs/         architecture / discord-integration / database / operations
 
 ## Quick start
 
-本番セットアップは `./scripts/setup.sh` で対話的に実行できます（DB マイグレーション・初期データ・API デプロイ・Discord コマンド登録）。手動で行う場合は以下。
+本番セットアップは `./scripts/setup.sh` で対話的に実行できます（D1 作成・マイグレーション・初期データ・API/Web デプロイ・Discord コマンド登録）。Cloudflare Access の設定だけは手作業です。詳細は [docs/operations.md](docs/operations.md)。
 
-Requirements: Node.js 22+, pnpm 10, a PostgreSQL database (Supabase or `supabase start`).
+ローカル開発（Node.js 22+, pnpm 10。Cloudflare アカウントは不要）:
 
 ```bash
 pnpm install
 
-# 1. Database
-export DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
-pnpm db:migrate
+# 1. Database（ローカル D1 = apps/api/.wrangler）
+pnpm db:migrate:local
 SEED_ADMIN_EMAIL=you@example.com \
 SEED_DISCORD_GUILD_ID=<guild id> SEED_DISCORD_CHANNEL_ID=<#development id> \
-pnpm db:seed
+pnpm db:seed:local
 
 # 2. API (http://localhost:8787)
 cp apps/api/.dev.vars.example apps/api/.dev.vars   # fill in values
@@ -61,16 +60,15 @@ DISCORD_APPLICATION_ID=... DISCORD_BOT_TOKEN=... DISCORD_GUILD_ID=... pnpm disco
 ```
 
 Discord の Interactions Endpoint URL には `https://<api>/discord/interactions` を設定します。
-詳細は [docs/operations.md](docs/operations.md) を参照してください。
 
 ## Scripts
 
 | Command | |
 | --- | --- |
 | `pnpm typecheck` | 全パッケージの型チェック |
-| `pnpm test` | ユニット / API統合テスト（PGlite上で実際のマイグレーションを適用） |
+| `pnpm test` | ユニット / API統合テスト（Miniflare の実 D1 上で実際のマイグレーションを適用） |
 | `pnpm db:generate` | スキーマ変更からマイグレーションを生成 |
-| `pnpm db:migrate` / `pnpm db:seed` | マイグレーション適用 / 初期データ投入 |
+| `pnpm db:migrate` / `pnpm db:seed` | 本番 D1 へマイグレーション適用 / 初期データ投入（`:local` 付きはローカル D1） |
 | `pnpm discord:register` | `/request` と Message Command を登録 |
 
 ## Design principles

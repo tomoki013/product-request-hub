@@ -5,14 +5,15 @@
 ```
 Discord App ──(Interactions, Ed25519 signed)──┐
                                              ▼
-Next.js Management App ──(Bearer JWT)──▶ Hono API on Cloudflare Workers
+Next.js Management App ──(Access JWT)──▶ Hono API on Cloudflare Workers
+(behind Cloudflare Access)                (service binding)
                                              │
                           ┌──────────────────┼──────────────────┐
                           ▼                  ▼                  ▼
                    RequestService      AdminService      IdentityService
                           │                                      
                           ▼                                      
-                   Supabase PostgreSQL (Drizzle)        Discord REST API
+                   Cloudflare D1 (Drizzle)               Discord REST API
                                                         (DiscordSync notifier)
 ```
 
@@ -27,14 +28,14 @@ Next.js Management App ──(Bearer JWT)──▶ Hono API on Cloudflare Worker
 | Transport | `apps/api/src/routes/*`, `apps/api/src/discord/interactions.ts` | 認証、入力の検証 (zod)、レスポンス整形 |
 | Business logic | `apps/api/src/services/*` | 権限チェック、ステータス遷移、REQ番号採番、Activity記録、重複統合 |
 | Notifications | `apps/api/src/services/notifier.ts`, `apps/api/src/discord/sync.ts` | 変更の外部反映（Discordメッセージ更新・スレッド通知） |
-| Persistence | `packages/database` | スキーマ、マイグレーション |
+| Persistence | `packages/database` | スキーマ（Drizzle / SQLite）、マイグレーション（D1） |
 | Domain | `packages/shared` | 定数、ステータスフロー、権限マトリクス、API型 |
 
 `RequestService` は `RequestNotifier` インターフェースにのみ依存し、Discord を知りません。Slack 連携を追加する場合は Notifier と入力アダプタを追加するだけで、ドメインモデルは変わりません。
 
 ## Internal API (MVP)
 
-MVP では External API として公開しません（Web 管理画面専用・Supabase Auth 必須）。必要になったら `/api/v1/` として Public API 化します。
+MVP では External API として公開しません（Web 管理画面専用・Cloudflare Access の JWT 必須）。必要になったら `/api/v1/` として Public API 化します。
 
 | Method | Path | |
 | --- | --- | --- |
@@ -81,5 +82,5 @@ Discord から初めて操作したユーザーは、Channel Mapping の Workspa
 ## Authentication
 
 - **Discord**: Ed25519 署名検証 (`packages/discord/src/verify.ts`)。ユーザーは `external_identities (provider = discord)` で解決。
-- **Web**: Supabase Auth（Magic Link）。API は JWT を検証し（`SUPABASE_JWT_SECRET` の HS256、未設定なら JWKS）、`external_identities (provider = supabase)` → 未リンクならメールアドレスで事前登録済みユーザーに紐付けます。未登録のメールアドレスは 403。
+- **Web**: Web 管理画面は Cloudflare Access（Zero Trust）の背後に置きます。Access が付与する JWT（`Cf-Access-Jwt-Assertion`）を Web が API に転送し、API は Access の JWKS（`https://<team>.cloudflareaccess.com/cdn-cgi/access/certs`）で署名・issuer・audience を検証します。JWT の `email` で事前登録済みユーザーを解決し、未登録のメールアドレスは 403、email を持たない Service Token は 401。API 自体は Discord のために公開されているため、署名検証は省略できません。
 - **Local**: `AUTH_DEV_BYPASS=true` のときだけ `x-dev-user-email` ヘッダーを信頼します（本番では絶対に設定しない）。

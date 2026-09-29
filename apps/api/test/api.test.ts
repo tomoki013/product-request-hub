@@ -1,16 +1,16 @@
-import { PGlite } from "@electric-sql/pglite";
+import { readdirSync, readFileSync } from "node:fs";
+import { exportJWK, generateKeyPair, SignJWT } from "jose";
+import { Miniflare } from "miniflare";
 import {
+  createDb,
   discordChannelMappings,
   discordIntegrations,
   projects,
-  schema,
   users,
   workspaces,
   type Database,
 } from "@prh/database";
-import { drizzle } from "drizzle-orm/pglite";
-import { migrate } from "drizzle-orm/pglite/migrator";
-import { beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../src/app";
 import type { Bindings } from "../src/env";
 
@@ -24,7 +24,8 @@ const toHex = (buf: ArrayBuffer) =>
 let keys: CryptoKeyPair;
 let env: Bindings;
 let db: Database;
-let pg: PGlite;
+let mf: Miniflare;
+let d1: D1Database;
 let ids: { workspace: string; project: string; admin: string; pm: string; dev: string };
 
 interface DiscordCall {
@@ -119,7 +120,22 @@ function modalSubmit(title: string, description: string, source?: string, custom
 
 beforeAll(async () => {
   keys = (await crypto.subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"])) as CryptoKeyPair;
+  // A real D1 (workerd + SQLite) with the same migrations that production applies.
+  mf = new Miniflare({
+    modules: true,
+    script: "export default { fetch() { return new Response(null); } }",
+    d1Databases: { DB: "test" },
+  });
+  d1 = await mf.getD1Database("DB");
+  for (const file of readdirSync(migrationsFolder).filter((f) => f.endsWith(".sql")).sort()) {
+    const statements = readFileSync(`${migrationsFolder}/${file}`, "utf8")
+      .split("--> statement-breakpoint")
+      .map((x) => x.trim())
+      .filter(Boolean);
+    await d1.batch(statements.map((x) => d1.prepare(x)));
+  }
   env = {
+    DB: d1,
     DISCORD_PUBLIC_KEY: toHex((await crypto.subtle.exportKey("raw", keys.publicKey)) as ArrayBuffer),
     DISCORD_APPLICATION_ID: "app-1",
     DISCORD_BOT_TOKEN: "bot-token",
@@ -128,11 +144,29 @@ beforeAll(async () => {
   };
 });
 
+afterAll(async () => {
+  await mf.dispose();
+});
+
+const TABLES = [
+  "request_events",
+  "request_links",
+  "request_sources",
+  "request_origins",
+  "requests",
+  "request_number_sequences",
+  "releases",
+  "discord_channel_mappings",
+  "discord_integrations",
+  "external_identities",
+  "users",
+  "projects",
+  "workspaces",
+];
+
 beforeEach(async () => {
-  pg = new PGlite();
-  const d = drizzle(pg, { schema });
-  await migrate(d, { migrationsFolder });
-  db = d as unknown as Database;
+  await d1.batch(TABLES.map((t) => d1.prepare(`DELETE FROM ${t}`)));
+  db = createDb(d1);
   discordCalls = [];
   pending = [];
   messageSeq = 0;
@@ -298,6 +332,25 @@ describe("Request API", () => {
     expect(search.body.items.map((i: { key: string }) => i.key)).toEqual(["REQ-0002"]);
   });
 
+  it("allocates distinct numbers for concurrent creates and logs the key in the timeline", async () => {
+    const create = (i: number) =>
+      api("pm@example.com", "POST", "/requests", {
+        title: `req ${i}`,
+        description: "x",
+        origin: { provider: "web", projectId: ids.project },
+      });
+    const results = await Promise.all(Array.from({ length: 8 }, (_, i) => create(i)));
+    expect(results.every((r) => r.status === 201)).toBe(true);
+    const keys = results.map((r) => r.body.key).sort();
+    expect(new Set(keys).size).toBe(8);
+    expect(keys[0]).toBe("REQ-0001");
+    expect(keys[7]).toBe("REQ-0008");
+
+    const first = results[0]!.body;
+    const events = await api("admin@example.com", "GET", `/requests/${first.key}/events`);
+    expect(events.body.items[0]).toMatchObject({ eventType: "request_created", newValue: first.key });
+  });
+
   it("does not accept a Discord origin from web clients", async () => {
     const res = await api("pm@example.com", "POST", "/requests", {
       title: "A",
@@ -433,7 +486,71 @@ describe("Request API", () => {
   });
 
   it("requires authentication", async () => {
-    const res = await app.request("/api/requests", {}, { ...env, SUPABASE_JWT_SECRET: "s" }, executionCtx);
+    const res = await app.request("/api/requests", {}, env, executionCtx);
+    expect(res.status).toBe(401);
+  });
+});
+
+describe("Cloudflare Access authentication", () => {
+  const TEAM = "test-team.cloudflareaccess.com";
+  const AUD = "aud-tag-123";
+  let signKey: CryptoKey;
+  let otherKey: CryptoKey;
+  const accessEnv = () => ({ ...env, AUTH_DEV_BYPASS: undefined, CF_ACCESS_TEAM_DOMAIN: TEAM, CF_ACCESS_AUD: AUD });
+
+  beforeAll(async () => {
+    const pair = await generateKeyPair("RS256", { extractable: true });
+    signKey = pair.privateKey;
+    otherKey = (await generateKeyPair("RS256")).privateKey;
+    const jwk = { ...(await exportJWK(pair.publicKey)), kid: "k1", alg: "RS256", use: "sig" };
+    vi.stubGlobal("fetch", async (input: RequestInfo | URL) => {
+      if (String(input) === `https://${TEAM}/cdn-cgi/access/certs`) return Response.json({ keys: [jwk] });
+      throw new Error(`unexpected fetch ${String(input)}`);
+    });
+  });
+  afterAll(() => vi.unstubAllGlobals());
+
+  const token = (claims: { email?: string; aud?: string; iss?: string }, key = signKey) =>
+    new SignJWT({ ...(claims.email ? { email: claims.email } : {}) })
+      .setProtectedHeader({ alg: "RS256", kid: "k1" })
+      .setIssuer(claims.iss ?? `https://${TEAM}`)
+      .setAudience(claims.aud ?? AUD)
+      .setExpirationTime("5m")
+      .sign(key);
+
+  const call = async (jwt?: string, e: Bindings = accessEnv()) =>
+    (
+      await app.request(
+        "/api/me",
+        { headers: jwt ? { "cf-access-jwt-assertion": jwt } : {} },
+        e,
+        executionCtx,
+      )
+    ).status;
+
+  it("accepts a valid Access JWT for a registered user", async () => {
+    expect(await call(await token({ email: "PM@example.com" }))).toBe(200);
+  });
+
+  it("rejects missing, forged, wrong-audience and wrong-issuer tokens", async () => {
+    expect(await call()).toBe(401);
+    expect(await call(await token({ email: "pm@example.com" }, otherKey))).toBe(401);
+    expect(await call(await token({ email: "pm@example.com", aud: "other" }))).toBe(401);
+    expect(await call(await token({ email: "pm@example.com", iss: "https://evil.example.com" }))).toBe(401);
+  });
+
+  it("rejects tokens without an email (service tokens) and unregistered users", async () => {
+    expect(await call(await token({}))).toBe(401);
+    expect(await call(await token({ email: "stranger@example.com" }))).toBe(403);
+  });
+
+  it("does not honour the dev header unless AUTH_DEV_BYPASS is on", async () => {
+    const res = await app.request(
+      "/api/me",
+      { headers: { "x-dev-user-email": "admin@example.com" } },
+      accessEnv(),
+      executionCtx,
+    );
     expect(res.status).toBe(401);
   });
 });

@@ -1,8 +1,5 @@
-DATABASE_URL=postgresql://postgres:postgres@127.0.0.1:54322/postgres
 DISCORD_PUBLIC_KEY=
 DISCORD_APPLICATION_ID=
 DISCORD_BOT_TOKEN=
-SUPABASE_URL=http://127.0.0.1:54321
-SUPABASE_JWT_SECRET=
-# Local only: trust the x-dev-user-email header instead of a Supabase JWT.
+# Local only: trust the x-dev-user-email header instead of a Cloudflare Access JWT.
 AUTH_DEV_BYPASS=true

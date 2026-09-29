@@ -1,0 +1,16 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "product-request-hub-web",
+  "main": ".open-next/worker.js",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public"],
+  "assets": { "binding": "ASSETS", "directory": ".open-next/assets" },
+  "observability": { "enabled": true },
+  "services": [
+    // Calls to the API Worker (apps/api) stay inside Cloudflare.
+    { "binding": "API", "service": "product-request-hub-api" },
+    { "binding": "WORKER_SELF_REFERENCE", "service": "product-request-hub-web" }
+  ]
+  // Protect this Worker with a Cloudflare Access application (Zero Trust → Access → Applications).
+  // Do not set DEV_USER_EMAIL in production.
+}

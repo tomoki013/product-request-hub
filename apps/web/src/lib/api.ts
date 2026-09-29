@@ -1,7 +1,8 @@
 import "server-only";
 import type { ApiErrorBody } from "@prh/shared";
-import { redirect } from "next/navigation";
-import { createSupabaseServerClient, isDevAuth } from "./supabase/server";
+import { getCloudflareContext } from "@opennextjs/cloudflare";
+import { headers } from "next/headers";
+import { isDevAuth } from "./auth";
 
 export class ApiError extends Error {
   constructor(
@@ -13,15 +14,30 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * Cloudflare Access sits in front of this app and attaches a signed JWT to every
+ * request. It is forwarded to the API, which verifies it and matches the email
+ * to a registered user.
+ */
 async function authHeaders(): Promise<Record<string, string>> {
   if (isDevAuth()) return { "x-dev-user-email": process.env.DEV_USER_EMAIL! };
-  const supabase = await createSupabaseServerClient();
-  // getUser() validates the session with Supabase before we forward the token.
-  const { data: user } = await supabase.auth.getUser();
-  if (!user.user) redirect("/login");
-  const { data } = await supabase.auth.getSession();
-  if (!data.session) redirect("/login");
-  return { authorization: `Bearer ${data.session.access_token}` };
+  const jwt = (await headers()).get("cf-access-jwt-assertion");
+  if (!jwt) {
+    throw new ApiError(401, "unauthorized", "Cloudflare Access のトークンがありません。Access でこのアプリを保護してください。");
+  }
+  return { "cf-access-jwt-assertion": jwt };
+}
+
+/** Same-account Worker calls go through the `API` service binding when deployed on Workers. */
+function apiFetch(): { fetch: typeof fetch; base: string } {
+  try {
+    const { env } = getCloudflareContext();
+    const binding = (env as { API?: { fetch: typeof fetch } }).API;
+    if (binding) return { fetch: binding.fetch.bind(binding), base: "https://api.internal" };
+  } catch {
+    // Not running on Workers (next dev / Node): use API_BASE_URL.
+  }
+  return { fetch, base: process.env.API_BASE_URL ?? "" };
 }
 
 /**
@@ -29,13 +45,13 @@ async function authHeaders(): Promise<Record<string, string>> {
  * database directly (design doc §19).
  */
 export async function api<T>(path: string, init: { method?: string; body?: unknown } = {}): Promise<T> {
-  const res = await fetch(`${process.env.API_BASE_URL}/api${path}`, {
+  const target = apiFetch();
+  const res = await target.fetch(`${target.base}/api${path}`, {
     method: init.method ?? "GET",
     headers: { ...(await authHeaders()), "content-type": "application/json" },
     body: init.body === undefined ? undefined : JSON.stringify(init.body),
     cache: "no-store",
   });
-  if (res.status === 401) redirect("/login");
   if (!res.ok) {
     const body = (await res.json().catch(() => null)) as ApiErrorBody | null;
     throw new ApiError(res.status, body?.error.code ?? "unknown", body?.error.message ?? res.statusText);

@@ -3,7 +3,7 @@ import { USER_ROLE_LABELS } from "@prh/shared";
 import Link from "next/link";
 import type { ReactNode } from "react";
 import { api } from "@/lib/api";
-import { isDevAuth } from "@/lib/supabase/server";
+import { isDevAuth } from "@/lib/auth";
 
 export default async function AppLayout({ children }: { children: ReactNode }) {
   const me = await api<Me>("/me");
@@ -39,9 +39,9 @@ export default async function AppLayout({ children }: { children: ReactNode }) {
               {me.workspace.name} · {me.name} ({USER_ROLE_LABELS[me.role]})
             </span>
             {!isDevAuth() && (
-              <form action="/auth/signout" method="post">
-                <button className="hover:text-slate-900">ログアウト</button>
-              </form>
+              <a href="/cdn-cgi/access/logout" className="hover:text-slate-900">
+                ログアウト
+              </a>
             )}
           </div>
         </div>

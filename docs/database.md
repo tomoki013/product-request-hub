@@ -1,6 +1,16 @@
 # Database
 
-Supabase PostgreSQL。スキーマは `packages/database/src/schema.ts`（Drizzle）、マイグレーションは `packages/database/migrations`。
+Cloudflare D1（SQLite）。スキーマは `packages/database/src/schema.ts`（Drizzle `sqlite-core`）、マイグレーションは `packages/database/migrations`（drizzle-kit が生成するプレーン SQL を `wrangler d1 migrations apply` で適用）。
+
+## SQLite / D1 での型の扱い
+
+| ドメイン | D1 |
+| --- | --- |
+| id | `TEXT` の UUID（アプリ側で `crypto.randomUUID()` を採番） |
+| enum（status, priority, role ...） | `TEXT`。値の集合は `@prh/shared` の定数で型付けし、API 境界の zod で検証（DB に CHECK 制約は置いていません） |
+| timestamp | `INTEGER`（epoch ミリ秒。Drizzle が `Date` に変換） |
+| jsonb | `TEXT`（JSON。Drizzle が object に変換） |
+| boolean | `INTEGER` 0/1 |
 
 ## Tables
 
@@ -9,7 +19,7 @@ Supabase PostgreSQL。スキーマは `packages/database/src/schema.ts`（Drizzl
 | `workspaces` | テナント（例: Tomokichi） |
 | `projects` | Workspace 内のプロダクト（例: Zakkary）。`(workspace_id, slug)` unique |
 | `users` | Workspace のメンバーとロール。`(workspace_id, email)` unique |
-| `external_identities` | Discord / GitHub / Slack / Supabase の外部 ID。`users` から分離。`(user_id, provider)` unique |
+| `external_identities` | Discord / GitHub / Slack の外部 ID。`users` から分離。`(user_id, provider)` unique |
 | `discord_integrations` | 接続済み Discord サーバー。`discord_guild_id` unique |
 | `discord_channel_mappings` | `(guild, channel) → project`。`request_enabled` で有効/無効 |
 | `releases` | Target Release の候補（Project ごと） |
@@ -53,19 +63,32 @@ Request Count = COUNT(request_sources)
 
 ## REQ 番号
 
-`request_number_sequences` を `INSERT ... ON CONFLICT DO UPDATE SET last_number = last_number + 1 RETURNING` で更新し、Request 挿入と同じトランザクションで採番します。行ロックにより同時作成でも重複しません。
+D1 は対話的トランザクションを持たないため、`db.batch([...])`（アトミックに実行される）で次の順に書き込みます。
 
-## Row Level Security
+1. `request_number_sequences` を `INSERT ... ON CONFLICT DO UPDATE SET last_number = last_number + 1`
+2. `requests` を、`(select last_number from request_number_sequences where workspace_id = ?)` を `request_number` にして挿入
+3. origin / source / `request_created` イベントを挿入
 
-API は特権ロールで接続し、認可をアプリケーション層で行います。`0001_enable_rls.sql` で全テーブルの RLS をポリシーなしで有効化し、Supabase の `anon` / `authenticated` ロール（PostgREST）から直接読み書きできないようにしています。
+D1 は書き込みを直列化するので、同時作成でも番号は重複しません（テスト `allocates distinct numbers for concurrent creates`）。
+
+## Activity Timeline の順序
+
+`request_events` は `(created_at, rowid)` の順で読み出します。`created_at` はミリ秒精度なので同一ミリ秒に複数イベントが入り得ますが、追記専用テーブルの `rowid` は単調増加のため順序が保たれます。
+
+## 認可
+
+API は D1 バインディング経由でのみ DB に到達でき（D1 には公開エンドポイントがありません）、認可はアプリケーション層で行います。
 
 ## Migrations
 
 ```bash
-# スキーマを変更したら
+# スキーマ(packages/database/src/schema.ts)を変更したら SQL を生成
 pnpm db:generate
-# 適用
-DATABASE_URL=... pnpm db:migrate
+# ローカル D1 (apps/api/.wrangler) / 本番 D1 に適用
+pnpm db:migrate:local
+pnpm db:migrate
 ```
 
-テスト (`apps/api/test`) は PGlite 上で同じマイグレーションを適用して実行します。
+初期データは `pnpm db:seed`（本番）/ `pnpm db:seed:local`（ローカル）。冪等な SQL を生成して `wrangler d1 execute` で流します。
+
+テスト (`apps/api/test`) は Miniflare の実 D1（workerd + SQLite）上で同じマイグレーションを適用して実行します。
