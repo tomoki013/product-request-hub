@@ -36,14 +36,14 @@
 4. **API をデプロイ**
    ```bash
    cd apps/api
-   pnpm deploy
+   pnpm run deploy
    wrangler secret put DISCORD_PUBLIC_KEY
    wrangler secret put DISCORD_APPLICATION_ID
    wrangler secret put DISCORD_BOT_TOKEN
    ```
 5. **Web をデプロイ**（API を先にデプロイしておくこと。Service Binding が API Worker を参照します）
    ```bash
-   pnpm --filter @prh/web deploy
+   pnpm --filter @prh/web cf:deploy
    ```
 6. **Cloudflare Access で Web を保護**: Zero Trust → Access → Applications → Self-hosted。Application domain に Web の URL、Policy は登録メンバーのメールアドレスを Allow。作成後の **Team domain** と **AUD タグ** を `apps/api/wrangler.jsonc` の `CF_ACCESS_TEAM_DOMAIN` / `CF_ACCESS_AUD` に設定して API を再デプロイします。`WEB_BASE_URL` も本番の Web URL にしてください。
 7. **Interactions Endpoint URL** に `https://<api>/discord/interactions` を設定（保存時に Discord が PING を送り、署名検証が通れば保存されます）。

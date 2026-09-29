@@ -106,7 +106,7 @@ API_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' /tmp/prh-api-deploy.lo
 popd >/dev/null
 
 echo "== 5/6 Web デプロイ (OpenNext on Workers)"
-pnpm --filter @prh/web deploy | tee /tmp/prh-web-deploy.log
+pnpm --filter @prh/web cf:deploy | tee /tmp/prh-web-deploy.log
 WEB_URL=$(grep -oE 'https://[a-zA-Z0-9.-]+\.workers\.dev' /tmp/prh-web-deploy.log | tail -1 || true)
 if [[ -n $WEB_URL ]]; then
   # CORS / 「詳細を見る」リンクに使われる。Access のドメインを使うなら後で書き換える。
