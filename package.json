@@ -1,0 +1,30 @@
+{
+  "name": "product-request-hub",
+  "private": true,
+  "description": "Turn product feedback from Discord into structured, trackable product requests.",
+  "packageManager": "pnpm@10.33.0",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev:api": "pnpm --filter @prh/api dev",
+    "dev:web": "pnpm --filter @prh/web dev",
+    "build": "pnpm -r build",
+    "typecheck": "pnpm -r typecheck",
+    "test": "pnpm -r test",
+    "db:generate": "pnpm --filter @prh/database generate",
+    "db:migrate": "pnpm --filter @prh/database migrate",
+    "db:seed": "pnpm --filter @prh/database seed",
+    "discord:register": "pnpm --filter @prh/discord register"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd",
+      "sharp"
+    ]
+  }
+}

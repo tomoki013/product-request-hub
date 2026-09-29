@@ -1,0 +1,38 @@
+name: Product Request Hub
+slug: product-request-hub
+repository: product-request-hub
+description: Turn product feedback from Discord into structured, trackable product requests.
+status: mvp
+design_version: "1.1"
+
+stack:
+  api: Hono on Cloudflare Workers
+  web: Next.js (App Router)
+  database: Supabase PostgreSQL (Drizzle ORM)
+  auth: Supabase Auth
+  integrations:
+    - discord
+
+layout:
+  apps:
+    api: apps/api
+    web: apps/web
+  packages:
+    database: packages/database
+    shared: packages/shared
+    discord: packages/discord
+    ui: packages/ui
+
+dogfooding:
+  workspace: Tomokichi
+  projects:
+    - name: Zakkary
+      slug: zakkary
+      discord_channels:
+        - "#development"
+
+docs:
+  - docs/architecture.md
+  - docs/discord-integration.md
+  - docs/database.md
+  - docs/operations.md

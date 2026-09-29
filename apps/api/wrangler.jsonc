@@ -1,0 +1,17 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "product-request-hub-api",
+  "main": "src/index.ts",
+  "compatibility_date": "2025-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": { "enabled": true },
+  "vars": {
+    "WEB_BASE_URL": "http://localhost:3000"
+  }
+  // Recommended in production: route Supabase through Hyperdrive.
+  // "hyperdrive": [{ "binding": "HYPERDRIVE", "id": "<hyperdrive-id>" }]
+  //
+  // Secrets (wrangler secret put ...):
+  //   DATABASE_URL, DISCORD_PUBLIC_KEY, DISCORD_APPLICATION_ID, DISCORD_BOT_TOKEN,
+  //   SUPABASE_URL, SUPABASE_JWT_SECRET (optional; JWKS is used when absent)
+}
