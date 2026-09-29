@@ -386,7 +386,7 @@ export class RequestService {
       .from(requestEvents)
       .leftJoin(users, eq(users.id, requestEvents.actorUserId))
       .where(eq(requestEvents.requestId, request.id))
-      .orderBy(asc(requestEvents.createdAt), asc(requestEvents.id));
+      .orderBy(asc(requestEvents.createdAt), asc(requestEvents.seq));
     return rows.map((r) => ({
       id: r.id,
       eventType: r.eventType,
