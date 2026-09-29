@@ -34,6 +34,8 @@ docs/         architecture / discord-integration / database / operations
 
 ## Quick start
 
+本番セットアップは `./scripts/setup.sh` で対話的に実行できます（DB マイグレーション・初期データ・API デプロイ・Discord コマンド登録）。手動で行う場合は以下。
+
 Requirements: Node.js 22+, pnpm 10, a PostgreSQL database (Supabase or `supabase start`).
 
 ```bash
