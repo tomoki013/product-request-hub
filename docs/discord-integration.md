@@ -89,3 +89,14 @@ Priority などその他の管理操作は通知しません。
 
 - `Send Messages`, `Create Public Threads`, `Send Messages in Threads`, `Read Message History`（返信のため）
 - OAuth2 scope: `bot`, `applications.commands`
+
+## Bot の招待
+
+招待できるのは、対象サーバーの「サーバー管理」権限（またはオーナー）を持つ人だけです。権限がない場合は、次の URL をオーナーに渡して承認してもらいます（`<APPLICATION_ID>` は差し替え）。
+
+```
+https://discord.com/oauth2/authorize?client_id=<APPLICATION_ID>&scope=bot%20applications.commands&permissions=309237729280
+```
+
+`permissions=309237729280` は Send Messages / Embed Links / Read Message History / Create Public Threads / Send Messages in Threads です。
+アプリの作成者以外が承認する場合は、Developer Portal の Bot ページで **Public Bot** を ON にしてください。
